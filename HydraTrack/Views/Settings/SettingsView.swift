@@ -5,29 +5,27 @@
 
 import SwiftUI
 import SwiftData
+import CoreLocation
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject var notificationManager: NotificationManager
     @EnvironmentObject var healthKitManager: HealthKitManager
+    @EnvironmentObject var weatherService: WeatherService
 
     @AppStorage("units") private var units: VolumeUnit = .milliliters
-    @AppStorage("wakeTimeMinutes") private var wakeTimeMinutes: Int = 420 // 7:00 AM
-    @AppStorage("sleepTimeMinutes") private var sleepTimeMinutes: Int = 1380 // 11:00 PM
+    @AppStorage("wakeTimeMinutes") private var wakeTimeMinutes: Int = 420
+    @AppStorage("sleepTimeMinutes") private var sleepTimeMinutes: Int = 1380
     @AppStorage("notificationsEnabled") private var notificationsEnabled: Bool = true
     @AppStorage("notificationFrequency") private var notificationFrequency: Int = 4
-    @AppStorage("smartRemindersEnabled") private var smartRemindersEnabled: Bool = false
-    @AppStorage("smartReminderThresholdHours") private var smartReminderThresholdHours: Int = 2
-    @AppStorage("healthKitSleepEnabled") private var healthKitSleepEnabled: Bool = false
 
-    @State private var showingProfileEdit = false
     @State private var showingGoalBreakdown = false
-    @State private var showingHealthKitAuth = false
     @State private var customGoal: String = ""
     @State private var useCustomGoal: Bool = false
     @State private var cachedProfile: UserProfile?
     @State private var todayGoalOverride: String = ""
     @State private var hasTodayOverride: Bool = false
+    @State private var showTodayOverride: Bool = false
 
     private var dataService: HydrationDataService {
         HydrationDataService(modelContext: modelContext)
@@ -41,265 +39,249 @@ struct SettingsView: View {
         cachedProfile = dataService.getUserProfile()
     }
 
-    private var wakeTime: Date {
-        Calendar.current.date(bySettingHour: wakeTimeMinutes / 60, minute: wakeTimeMinutes % 60, second: 0, of: Date()) ?? Date()
-    }
-
-    private var sleepTime: Date {
-        Calendar.current.date(bySettingHour: sleepTimeMinutes / 60, minute: sleepTimeMinutes % 60, second: 0, of: Date()) ?? Date()
-    }
-
     var body: some View {
         NavigationView {
             Form {
-                // Profile Section
-                Section("Profile") {
+                // MARK: - Hydration Goal (Most frequently adjusted)
+                Section {
                     if let profile = userProfile {
+                        // Current Goal - Prominent display
                         HStack {
-                            Text("Age")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Daily Goal")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Text(units.format(profile.dailyGoalMl))
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.primaryBlue)
+                            }
+
                             Spacer()
-                            Text("\(profile.age) years")
-                                .foregroundColor(.secondary)
-                        }
 
-                        HStack {
-                            Text("Weight")
-                            Spacer()
-                            Text("\(Int(profile.weightKg)) kg")
-                                .foregroundColor(.secondary)
+                            Button {
+                                showingGoalBreakdown = true
+                            } label: {
+                                Text("Breakdown")
+                                    .font(.caption)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.primaryBlue.opacity(0.1))
+                                    .foregroundColor(.primaryBlue)
+                                    .cornerRadius(8)
+                            }
                         }
+                        .padding(.vertical, 4)
 
-                        HStack {
-                            Text("Gender")
-                            Spacer()
-                            Text(profile.gender.rawValue)
-                                .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Text("Activity Level")
-                            Spacer()
-                            Text(profile.activityLevel.rawValue)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Button("Edit Profile") {
-                            showingProfileEdit = true
-                        }
-                    }
-                }
-
-                // Goal Section
-                Section("Daily Goal") {
-                    if let profile = userProfile {
-                        HStack {
-                            Text("Current Goal")
-                                .fontWeight(.semibold)
-                            Spacer()
-                            Text("\(profile.dailyGoalMl) mL")
-                                .foregroundColor(.primaryBlue)
-                                .fontWeight(.bold)
-                        }
-
-                        Button("View Breakdown") {
-                            showingGoalBreakdown = true
-                        }
-
-                        Toggle("Use Custom Goal", isOn: $useCustomGoal)
+                        // Custom Goal Toggle
+                        Toggle("Custom Goal", isOn: $useCustomGoal)
                             .onChange(of: useCustomGoal) { _, newValue in
                                 if !newValue {
                                     dataService.setCustomGoal(nil, for: profile)
+                                    updateProfileCache()
                                 }
                             }
 
                         if useCustomGoal {
                             HStack {
-                                TextField("Goal (mL)", text: $customGoal)
-                                    .keyboardType(.numberPad)
+                                TextField("Goal (\(units.abbreviation))", text: $customGoal)
+                                    .keyboardType(.decimalPad)
 
                                 Button("Set") {
-                                    if let goal = Int(customGoal), goal >= 1500 && goal <= 4500 {
-                                        dataService.setCustomGoal(goal, for: profile)
+                                    if let value = Double(customGoal) {
+                                        let goalMl = units.convertToMl(from: value)
+                                        if goalMl >= 1500 && goalMl <= 3200 {
+                                            dataService.setCustomGoal(goalMl, for: profile)
+                                            updateProfileCache()
+                                        }
                                     }
                                 }
                                 .disabled(customGoal.isEmpty)
                             }
                         }
-                    }
-                }
 
-                // Today's Goal Override Section
-                Section {
-                    if let profile = userProfile {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("Regular Goal")
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                Text("\(profile.dailyGoalMl) mL")
-                                    .foregroundColor(.secondary)
-                            }
-
-                            if hasTodayOverride, let override = dataService.getTodayGoalOverride() {
-                                HStack {
-                                    Text("Today's Goal")
-                                        .fontWeight(.semibold)
-                                    Spacer()
-                                    Text("\(override) mL")
-                                        .foregroundColor(.orange)
-                                        .fontWeight(.bold)
-                                }
-
-                                Button(role: .destructive) {
-                                    dataService.clearTodayGoalOverride()
-                                    hasTodayOverride = false
-                                    todayGoalOverride = ""
-                                } label: {
-                                    Text("Reset to Regular Goal")
-                                        .frame(maxWidth: .infinity)
-                                }
-                            } else {
-                                HStack {
-                                    TextField("Today's Goal (mL)", text: $todayGoalOverride)
-                                        .keyboardType(.numberPad)
-
-                                    Button("Set") {
-                                        if let goal = Int(todayGoalOverride), goal >= 1000 && goal <= 5000 {
-                                            dataService.setTodayGoalOverride(goalMl: goal)
-                                            hasTodayOverride = true
-                                        }
+                        // Today's Override - Collapsible
+                        DisclosureGroup(
+                            isExpanded: $showTodayOverride,
+                            content: {
+                                if hasTodayOverride, let override = dataService.getTodayGoalOverride() {
+                                    HStack {
+                                        Text("Today's Goal")
+                                        Spacer()
+                                        Text(units.format(override))
+                                            .foregroundColor(.orange)
+                                            .fontWeight(.semibold)
                                     }
-                                    .disabled(todayGoalOverride.isEmpty)
+
+                                    Button(role: .destructive) {
+                                        dataService.clearTodayGoalOverride()
+                                        hasTodayOverride = false
+                                        todayGoalOverride = ""
+                                    } label: {
+                                        Text("Reset to Regular Goal")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                } else {
+                                    HStack {
+                                        TextField("Override (\(units.abbreviation))", text: $todayGoalOverride)
+                                            .keyboardType(.decimalPad)
+
+                                        Button("Set") {
+                                            if let value = Double(todayGoalOverride) {
+                                                let goalMl = units.convertToMl(from: value)
+                                                if goalMl >= 1000 && goalMl <= 5000 {
+                                                    dataService.setTodayGoalOverride(goalMl: goalMl)
+                                                    hasTodayOverride = true
+                                                }
+                                            }
+                                        }
+                                        .disabled(todayGoalOverride.isEmpty)
+                                    }
+
+                                    Text("Resets tomorrow")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            },
+                            label: {
+                                HStack {
+                                    Text("Today Only")
+                                    if hasTodayOverride {
+                                        Spacer()
+                                        Text("Active")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                    }
                                 }
                             }
-
-                            Text("Override your daily goal for today only. Useful when you have different activity levels.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+                        )
                     }
                 } header: {
-                    Text("Today's Goal")
-                } footer: {
-                    Text("This override only applies to today and will reset tomorrow.")
+                    Label("Hydration Goal", systemImage: "target")
                 }
 
-                // Units Section
-                Section("Units") {
+                // MARK: - Quick Settings
+                Section {
                     Picker("Volume Unit", selection: $units) {
                         ForEach(VolumeUnit.allCases, id: \.self) { unit in
                             Text(unit.rawValue).tag(unit)
                         }
                     }
                     .pickerStyle(.segmented)
+                } header: {
+                    Label("Units", systemImage: "ruler")
                 }
 
-                // Notifications Section
-                Section("Notifications") {
-                    Toggle("Enable Reminders", isOn: $notificationsEnabled)
-                        .onChange(of: notificationsEnabled) { _, newValue in
+                // MARK: - Notifications (NavigationLink to sub-page)
+                Section {
+                    NavigationLink {
+                        NotificationsSettingsView()
+                    } label: {
+                        HStack {
+                            Text("Reminders")
+                            Spacer()
+                            Text(notificationsEnabled ? "\(notificationFrequency)/day" : "Off")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } header: {
+                    Label("Notifications", systemImage: "bell")
+                }
+
+                // MARK: - Weather Adjustment
+                Section {
+                    Toggle("Weather-Based", isOn: Binding(
+                        get: { weatherService.isEnabled },
+                        set: { newValue in
                             if newValue {
-                                Task {
-                                    try? await notificationManager.requestAuthorization()
-                                    scheduleNotifications()
-                                }
-                            } else {
-                                notificationManager.cancelAllReminders()
+                                weatherService.requestLocationPermission()
                             }
+                            weatherService.setEnabled(newValue)
                         }
+                    ))
 
-                    if notificationsEnabled {
-                        Stepper("Reminders per day: \(notificationFrequency)", value: $notificationFrequency, in: 1...10)
-                            .onChange(of: notificationFrequency) { _, _ in
-                                scheduleNotifications()
+                    if weatherService.isEnabled {
+                        if let temp = weatherService.currentTemperatureCelsius {
+                            HStack {
+                                Text("\(Int(temp))°C")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("+\(units.format(weatherService.weatherAdjustmentMl))")
+                                    .foregroundColor(.orange)
+                                    .fontWeight(.semibold)
                             }
-
-                        Toggle("Smart Reminders", isOn: $smartRemindersEnabled)
-                            .onChange(of: smartRemindersEnabled) { _, newValue in
-                                notificationManager.scheduleSmartReminders(enabled: newValue, modelContext: modelContext)
-                            }
-
-                        if smartRemindersEnabled {
-                            Stepper("Check every \(smartReminderThresholdHours) hour\(smartReminderThresholdHours == 1 ? "" : "s")", value: $smartReminderThresholdHours, in: 1...6)
-
-                            Text("Smart reminders send notifications when you haven't logged a drink for a while.")
+                        } else if weatherService.locationStatus == .denied || weatherService.locationStatus == .restricted {
+                            Text("Location access denied")
                                 .font(.caption)
+                                .foregroundColor(.red)
+                        } else {
+                            HStack {
+                                Text("Fetching...")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                } header: {
+                    Label("Weather", systemImage: "thermometer.sun")
+                } footer: {
+                    Text("Increase goal on hot days (up to +\(units.format(250)))")
+                }
+
+                // MARK: - Sleep Schedule (NavigationLink to sub-page)
+                Section {
+                    NavigationLink {
+                        SleepScheduleSettingsView()
+                    } label: {
+                        HStack {
+                            Text("Schedule")
+                            Spacer()
+                            Text(sleepScheduleSummary)
                                 .foregroundColor(.secondary)
                         }
                     }
+                } header: {
+                    Label("Sleep Schedule", systemImage: "moon.zzz")
                 }
 
-                // Sleep Schedule Section
-                Section("Sleep Schedule") {
-                    if healthKitManager.isHealthKitAvailable() {
-                        Toggle("Use Apple Health", isOn: $healthKitSleepEnabled)
-                            .onChange(of: healthKitSleepEnabled) { oldValue, newValue in
-                                if newValue {
-                                    requestHealthKitAccess()
-                                } else {
-                                    healthKitManager.sleepSchedule = nil
+                // MARK: - Profile (NavigationLink to sub-page)
+                Section {
+                    NavigationLink {
+                        ProfileSettingsView()
+                    } label: {
+                        if let profile = userProfile {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profile.gender.rawValue)
+                                        .font(.subheadline)
+                                    Text("\(profile.age)y • \(Int(profile.weightKg))kg • \(profile.activityLevel.shortName)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
                                 }
+                                Spacer()
                             }
-                    }
-
-                    if !healthKitSleepEnabled {
-                        DatePicker("Wake Time", selection: Binding(
-                            get: { wakeTime },
-                            set: { newValue in
-                                let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                                wakeTimeMinutes = (components.hour ?? 7) * 60 + (components.minute ?? 0)
-                                scheduleNotifications()
-                            }
-                        ), displayedComponents: .hourAndMinute)
-
-                        DatePicker("Sleep Time", selection: Binding(
-                            get: { sleepTime },
-                            set: { newValue in
-                                let components = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                                sleepTimeMinutes = (components.hour ?? 23) * 60 + (components.minute ?? 0)
-                                scheduleNotifications()
-                            }
-                        ), displayedComponents: .hourAndMinute)
-                    } else if let schedule = healthKitManager.sleepSchedule {
-                        HStack {
-                            Text("Wake Time")
-                            Spacer()
-                            Text(schedule.wake, style: .time)
-                                .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Text("Sleep Time")
-                            Spacer()
-                            Text(schedule.sleep, style: .time)
-                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Set up profile")
                         }
                     }
+                } header: {
+                    Label("Profile", systemImage: "person.crop.circle")
                 }
 
-                // About Section
-                Section("About") {
+                // MARK: - About
+                Section {
                     HStack {
                         Text("Version")
                         Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")
+                        Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
                             .foregroundColor(.secondary)
                     }
-
-                    HStack {
-                        Text("Build")
-                        Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown")
-                            .foregroundColor(.secondary)
-                    }
+                } header: {
+                    Label("About", systemImage: "info.circle")
                 }
             }
             .navigationTitle("Settings")
-        }
-        .sheet(isPresented: $showingProfileEdit) {
-            if let profile = userProfile {
-                ProfileEditView(profile: profile)
-            }
         }
         .sheet(isPresented: $showingGoalBreakdown) {
             if let profile = userProfile {
@@ -332,8 +314,6 @@ struct SettingsView: View {
                 useCustomGoal = true
                 customGoal = "\(profile.customGoalMl!)"
             }
-
-            // Check for today's goal override
             if let override = dataService.getTodayGoalOverride() {
                 hasTodayOverride = true
                 todayGoalOverride = "\(override)"
@@ -341,35 +321,12 @@ struct SettingsView: View {
         }
     }
 
-    private func scheduleNotifications() {
-        guard notificationsEnabled else { return }
-        notificationManager.scheduleReminders(
-            wakeTime: wakeTime,
-            sleepTime: sleepTime,
-            frequency: notificationFrequency
-        )
-    }
-
-    private func requestHealthKitAccess() {
-        Task {
-            do {
-                try await healthKitManager.requestAuthorization()
-                if let schedule = try await healthKitManager.fetchSleepSchedule() {
-                    await MainActor.run {
-                        healthKitManager.sleepSchedule = schedule
-                        let wakeComponents = Calendar.current.dateComponents([.hour, .minute], from: schedule.wake)
-                        wakeTimeMinutes = (wakeComponents.hour ?? 7) * 60 + (wakeComponents.minute ?? 0)
-
-                        let sleepComponents = Calendar.current.dateComponents([.hour, .minute], from: schedule.sleep)
-                        sleepTimeMinutes = (sleepComponents.hour ?? 23) * 60 + (sleepComponents.minute ?? 0)
-
-                        scheduleNotifications()
-                    }
-                }
-            } catch {
-                healthKitSleepEnabled = false
-            }
-        }
+    private var sleepScheduleSummary: String {
+        let wakeHour = wakeTimeMinutes / 60
+        let wakeMin = wakeTimeMinutes % 60
+        let sleepHour = sleepTimeMinutes / 60
+        let sleepMin = sleepTimeMinutes % 60
+        return String(format: "%d:%02d - %d:%02d", wakeHour, wakeMin, sleepHour, sleepMin)
     }
 }
 

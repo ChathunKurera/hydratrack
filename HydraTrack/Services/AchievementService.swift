@@ -39,11 +39,11 @@ class AchievementService {
         switch achievement.id {
         // Streak achievements
         case "streak_7":
-            return dataService.getCurrentStreak() >= 7
+            return getEffectiveStreak() >= 7
         case "streak_30":
-            return dataService.getCurrentStreak() >= 30
+            return getEffectiveStreak() >= 30
         case "streak_100":
-            return dataService.getCurrentStreak() >= 100
+            return getEffectiveStreak() >= 100
 
         // Volume achievements
         case "goal_120":
@@ -63,7 +63,7 @@ class AchievementService {
 
         // Milestone achievements
         case "first_goal":
-            return dataService.getCurrentStreak() >= 1
+            return checkTodayGoalMet() || dataService.getCurrentStreak() >= 1
         case "total_100L":
             return getTotalHydration() >= 100_000
         case "total_500L":
@@ -243,6 +243,32 @@ class AchievementService {
         let descriptor = FetchDescriptor<DrinkEntry>()
         let allDrinks = (try? modelContext.fetch(descriptor)) ?? []
         return allDrinks.reduce(0) { $0 + $1.effectiveHydrationMl }
+    }
+
+    private func checkTodayGoalMet() -> Bool {
+        let todayIntake = dataService.getTodayIntake()
+        let todayGoal = dataService.getEffectiveGoal()
+        return todayIntake >= todayGoal
+    }
+
+    /// Gets the current streak, including today if today's goal is met
+    private func getEffectiveStreak() -> Int {
+        let baseStreak = dataService.getCurrentStreak()
+
+        // If today's goal is met, add 1 to the streak (since getCurrentStreak might not count today)
+        if checkTodayGoalMet() {
+            // Check if getCurrentStreak already counted today
+            let todayIntake = dataService.getTodayIntake()
+            let todayGoal = dataService.getEffectiveGoal()
+
+            // If today is complete, getCurrentStreak should have counted it
+            // But if user just completed it, we should ensure it's counted
+            if todayIntake >= todayGoal && baseStreak == 0 {
+                return 1 // First day completing goal
+            }
+        }
+
+        return baseStreak
     }
 
     // MARK: - New Achievement Helpers

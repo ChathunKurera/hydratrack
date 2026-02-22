@@ -15,14 +15,23 @@ class HydrationDataService {
 
     // MARK: - Drink Operations
 
-    func addDrink(volumeMl: Int, type: DrinkType, name: String? = nil) {
+    @discardableResult
+    func addDrink(volumeMl: Int, type: DrinkType, name: String? = nil) -> DrinkEntry {
         let drink = DrinkEntry(volumeMl: volumeMl, drinkType: type, name: name)
         modelContext.insert(drink)
         try? modelContext.save()
+        return drink
     }
 
     func deleteDrink(_ drink: DrinkEntry) {
         modelContext.delete(drink)
+        try? modelContext.save()
+    }
+
+    func updateDrink(_ drink: DrinkEntry, volumeMl: Int, timestamp: Date) {
+        drink.volumeMl = volumeMl
+        drink.timestamp = timestamp
+        drink.effectiveHydrationMl = Int(Double(volumeMl) * drink.drinkType.hydrationFactor)
         try? modelContext.save()
     }
 
@@ -162,13 +171,21 @@ class HydrationDataService {
             return override.goalMl
         }
 
-        // For historical dates, look up the goal that was in effect on that date
+        // Get base goal (from history or profile)
+        let baseGoal: Int
         if let historicalGoal = getHistoricalGoal(for: date) {
-            return historicalGoal
+            baseGoal = historicalGoal
+        } else {
+            baseGoal = getUserProfile()?.dailyGoalMl ?? 2500
         }
 
-        // Fall back to current profile goal (for dates before any history was recorded)
-        return getUserProfile()?.dailyGoalMl ?? 2500
+        // Add weather adjustment for today only
+        if Calendar.current.isDateInToday(date) {
+            let weatherAdjustment = WeatherService.shared.weatherAdjustmentMl
+            return min(baseGoal + weatherAdjustment, 3200) // Respect max cap
+        }
+
+        return baseGoal
     }
 
     // MARK: - Completion & Streak Tracking
@@ -249,6 +266,78 @@ class HydrationDataService {
         return streak
     }
 
+    func getCurrentStreakWithFreeze(maxFreezes: Int = 1) -> StreakResult {
+        let calendar = Calendar.current
+        var streak = 0
+        var freezesUsed = 0
+        var isFrozen = false
+        var currentDate = Date()
+
+        // Check if today is complete
+        let todayIntake = getTodayIntake()
+        let todayGoal = getEffectiveGoal(for: currentDate)
+
+        if todayIntake < todayGoal {
+            // Check if today qualifies as a freeze (80-99%)
+            let todayPercentage = todayGoal > 0 ? (todayIntake * 100) / todayGoal : 0
+            if todayPercentage >= 80 && freezesUsed < maxFreezes {
+                // Today is a freeze day -- don't add to streak count, but don't break it
+                freezesUsed += 1
+                isFrozen = true
+                // Start counting from yesterday
+                guard let yesterday = calendar.date(byAdding: .day, value: -1, to: currentDate) else {
+                    return StreakResult(count: 0, isFrozen: isFrozen, freezesUsed: freezesUsed)
+                }
+                currentDate = yesterday
+            } else {
+                // Start from yesterday
+                guard let yesterday = calendar.date(byAdding: .day, value: -1, to: currentDate) else {
+                    return StreakResult(count: 0, isFrozen: false, freezesUsed: 0)
+                }
+                currentDate = yesterday
+            }
+        }
+
+        // Count backwards
+        while true {
+            let startOfDay = calendar.startOfDay(for: currentDate)
+            let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+
+            let descriptor = FetchDescriptor<DrinkEntry>(
+                predicate: #Predicate { drink in
+                    drink.timestamp >= startOfDay && drink.timestamp < endOfDay
+                }
+            )
+
+            let drinks = (try? modelContext.fetch(descriptor)) ?? []
+            let totalIntake = drinks.reduce(0) { $0 + $1.effectiveHydrationMl }
+            let goal = getEffectiveGoal(for: currentDate)
+            let percentage = goal > 0 ? (totalIntake * 100) / goal : 0
+
+            if totalIntake >= goal {
+                streak += 1
+            } else if percentage >= 80 && freezesUsed < maxFreezes {
+                // Freeze: don't increment streak, don't break it
+                freezesUsed += 1
+                isFrozen = true
+            } else {
+                break
+            }
+
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: currentDate) else {
+                break
+            }
+            currentDate = previousDay
+
+            // Safety: don't go back more than 1 year
+            if streak > 365 {
+                break
+            }
+        }
+
+        return StreakResult(count: streak, isFrozen: isFrozen, freezesUsed: freezesUsed)
+    }
+
     // MARK: - Dynamic Goal Adjustment
 
     func checkGoalAdjustment() -> GoalAdjustmentSuggestion? {
@@ -269,12 +358,12 @@ class HydrationDataService {
     }
 
     private func checkForGoalIncrease(calendar: Calendar, currentGoal: Int) -> GoalAdjustmentSuggestion? {
-        // Check if user has met goal for 7 consecutive days
+        // Check if user has met goal for 3 consecutive days
         var consecutiveDays = 0
         var totalIntakeSum = 0
         var totalExcess = 0
 
-        for daysAgo in 1...7 { // Start from yesterday to avoid incomplete today
+        for daysAgo in 1...3 { // Start from yesterday to avoid incomplete today
             guard let date = calendar.date(byAdding: .day, value: -daysAgo, to: Date()) else { continue }
             let startOfDay = calendar.startOfDay(for: date)
             let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
@@ -298,16 +387,16 @@ class HydrationDataService {
             }
         }
 
-        guard consecutiveDays >= 7 else { return nil }
+        guard consecutiveDays >= 3 else { return nil }
 
         // Algorithm for increase:
         // - Base increase: 5%
         // - If average excess > 10% of goal, increase by 10%
         // - If average excess > 20% of goal, increase by 15%
-        // - Cap at 15% increase and max goal of 4500mL
+        // - Cap at 15% increase and max goal of 3200mL
 
-        let averageIntake = totalIntakeSum / 7
-        let averageExcess = totalExcess / 7
+        let averageIntake = totalIntakeSum / 3
+        let averageExcess = totalExcess / 3
         let excessPercentage = (averageExcess * 100) / currentGoal
 
         var increasePercentage: Int
@@ -319,7 +408,7 @@ class HydrationDataService {
             increasePercentage = 5
         }
 
-        let suggestedGoal = min(4500, currentGoal + (currentGoal * increasePercentage / 100))
+        let suggestedGoal = min(3200, currentGoal + (currentGoal * increasePercentage / 100))
 
         // Round to nearest 50mL
         let roundedGoal = ((suggestedGoal + 25) / 50) * 50
@@ -331,7 +420,7 @@ class HydrationDataService {
             type: .increase,
             currentGoal: currentGoal,
             suggestedGoal: roundedGoal,
-            reason: "You've crushed your goal 7 days in a row! Time to level up?",
+            reason: "You've crushed your goal 3 days in a row! Time to level up?",
             averageIntake: averageIntake
         )
     }

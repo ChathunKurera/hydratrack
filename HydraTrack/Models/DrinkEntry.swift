@@ -7,7 +7,7 @@ import Foundation
 import SwiftData
 
 @Model
-class DrinkEntry {
+class DrinkEntry: Identifiable {
     @Attribute(.unique) var id: UUID
     var timestamp: Date
     var volumeMl: Int

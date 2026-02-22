@@ -28,4 +28,13 @@ enum ActivityLevel: String, Codable, CaseIterable, Sendable {
         case .veryActive: return "6-7 days/week"
         }
     }
+
+    nonisolated var shortName: String {
+        switch self {
+        case .sedentary: return "Sedentary"
+        case .lightlyActive: return "Light"
+        case .moderatelyActive: return "Moderate"
+        case .veryActive: return "Active"
+        }
+    }
 }

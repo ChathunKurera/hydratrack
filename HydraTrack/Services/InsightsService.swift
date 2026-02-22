@@ -23,11 +23,24 @@ class InsightsService {
         let weekStartDay = calendar.date(from: calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: weekStart))!
         let weekEnd = calendar.date(byAdding: .day, value: 6, to: weekStartDay)!
 
+        // Calculate how many days have elapsed in this week (for current week only)
+        let today = calendar.startOfDay(for: Date())
+        let daysElapsed: Int
+        if weeksAgo == 0 {
+            // Current week: count days from week start up to and including today
+            let daysSinceStart = calendar.dateComponents([.day], from: weekStartDay, to: today).day ?? 0
+            daysElapsed = min(daysSinceStart + 1, 7) // +1 because we include today
+        } else {
+            // Past weeks: all 7 days
+            daysElapsed = 7
+        }
+
         var dailyIntakes: [(Date, Int)] = []
         var totalVolume = 0
         var daysGoalMet = 0
 
-        for dayOffset in 0...6 {
+        // Only iterate through days that have elapsed
+        for dayOffset in 0..<daysElapsed {
             guard let date = calendar.date(byAdding: .day, value: dayOffset, to: weekStartDay) else { continue }
             let startOfDay = calendar.startOfDay(for: date)
             let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
@@ -53,7 +66,7 @@ class InsightsService {
         let averageIntake = dailyIntakes.isEmpty ? 0 : totalVolume / dailyIntakes.count
         let bestDay = dailyIntakes.max(by: { $0.1 < $1.1 })
         let worstDay = dailyIntakes.min(by: { $0.1 < $1.1 })
-        let completionRate = (daysGoalMet * 100) / 7
+        let completionRate = daysElapsed > 0 ? (daysGoalMet * 100) / daysElapsed : 0
 
         // Compare to last week
         let lastWeekInsights = weeksAgo == 0 ? getWeeklyInsights(weeksAgo: 1) : nil
@@ -72,6 +85,7 @@ class InsightsService {
             worstDay: worstDay,
             totalVolume: totalVolume,
             daysGoalMet: daysGoalMet,
+            daysElapsed: daysElapsed,
             completionRate: completionRate,
             comparedToLastWeek: comparedToLastWeek
         )
@@ -199,13 +213,13 @@ class InsightsService {
         if weeklyInsights.completionRate >= 90 {
             tips.append(InsightTip(
                 icon: "star.fill",
-                message: "Amazing! You hit your goal \(weeklyInsights.daysGoalMet) out of 7 days this week!",
+                message: "Amazing! You hit your goal \(weeklyInsights.daysGoalMet) out of \(weeklyInsights.daysElapsed) days this week!",
                 category: .positive
             ))
         } else if weeklyInsights.completionRate < 50 {
             tips.append(InsightTip(
                 icon: "exclamationmark.triangle.fill",
-                message: "Only \(weeklyInsights.completionRate)% completion this week. Let's aim higher!",
+                message: "Only \(weeklyInsights.completionRate)% completion so far this week. Let's aim higher!",
                 category: .warning
             ))
         }

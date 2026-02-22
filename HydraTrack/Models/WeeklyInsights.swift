@@ -13,6 +13,7 @@ struct WeeklyInsights {
     let worstDay: (date: Date, intake: Int)?
     let totalVolume: Int
     let daysGoalMet: Int
+    let daysElapsed: Int  // How many days have passed (1-7)
     let completionRate: Int
     let comparedToLastWeek: Int // Percentage change
 

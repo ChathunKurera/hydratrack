@@ -13,6 +13,7 @@ struct HydraTrackApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var notificationManager = NotificationManager()
     @StateObject private var healthKitManager = HealthKitManager()
+    @StateObject private var weatherService = WeatherService.shared
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -36,6 +37,10 @@ struct HydraTrackApp: App {
             ContentView()
                 .environmentObject(notificationManager)
                 .environmentObject(healthKitManager)
+                .environmentObject(weatherService)
+                .task {
+                    await weatherService.fetchWeatherIfNeeded()
+                }
         }
         .modelContainer(sharedModelContainer)
     }

@@ -177,7 +177,7 @@ struct InsightsDetailView: View {
 
                             DetailRow(label: "Average Daily Intake", value: "\(weekly.averageIntake) mL")
                             DetailRow(label: "Total Volume", value: "\(weekly.totalVolume) mL")
-                            DetailRow(label: "Days Goal Met", value: "\(weekly.daysGoalMet) / 7")
+                            DetailRow(label: "Days Goal Met", value: "\(weekly.daysGoalMet) / \(weekly.daysElapsed)")
                             DetailRow(label: "Completion Rate", value: "\(weekly.completionRate)%")
 
                             if let bestDay = weekly.bestDay {

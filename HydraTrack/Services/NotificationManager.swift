@@ -12,6 +12,9 @@ class NotificationManager: ObservableObject {
     private let center = UNUserNotificationCenter.current()
     @Published var authorizationStatus: UNAuthorizationStatus = .notDetermined
 
+    // Minimum hours since last drink before sending a reminder
+    static let minimumHoursSinceLastDrink: Double = 4.0
+
     init() {
         Task {
             await checkAuthorizationStatus()
@@ -34,20 +37,46 @@ class NotificationManager: ObservableObject {
 
     // MARK: - Scheduling
 
-    func scheduleReminders(wakeTime: Date, sleepTime: Date, frequency: Int) {
+    func scheduleReminders(wakeTime: Date, sleepTime: Date, frequency: Int, lastDrinkTime: Date? = nil) {
         cancelAllReminders()
 
         guard frequency > 0 else { return }
 
         let times = calculateReminderTimes(wake: wakeTime, sleep: sleepTime, count: frequency)
+        let calendar = Calendar.current
+        let now = Date()
+
+        // Calculate the cutoff time (4 hours after last drink)
+        let cutoffTime: Date?
+        if let lastDrink = lastDrinkTime {
+            cutoffTime = lastDrink.addingTimeInterval(Self.minimumHoursSinceLastDrink * 60 * 60)
+        } else {
+            cutoffTime = nil
+        }
 
         for (index, time) in times.enumerated() {
+            // Get today's version of this reminder time
+            var todayTime = calendar.date(bySettingHour: calendar.component(.hour, from: time),
+                                          minute: calendar.component(.minute, from: time),
+                                          second: 0, of: now)!
+
+            // If this time has already passed today, consider tomorrow's occurrence
+            if todayTime < now {
+                todayTime = calendar.date(byAdding: .day, value: 1, to: todayTime)!
+            }
+
+            // Skip this notification if it's within 4 hours of the last drink
+            if let cutoff = cutoffTime, todayTime < cutoff {
+                print("Skipping reminder at \(time) - within 4 hours of last drink")
+                continue
+            }
+
             let content = UNMutableNotificationContent()
             content.title = "Time to Hydrate!"
-            content.body = "Remember to drink water to stay healthy."
+            content.body = getRandomReminderMessage()
             content.sound = .default
 
-            let components = Calendar.current.dateComponents([.hour, .minute], from: time)
+            let components = calendar.dateComponents([.hour, .minute], from: time)
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
 
             let request = UNNotificationRequest(
@@ -62,6 +91,23 @@ class NotificationManager: ObservableObject {
                 }
             }
         }
+    }
+
+    private func getRandomReminderMessage() -> String {
+        let messages = [
+            "Remember to drink water to stay healthy.",
+            "Your body needs water! Take a sip.",
+            "Staying hydrated helps you feel energized.",
+            "A glass of water can boost your focus.",
+            "Don't forget to hydrate!",
+            "Water break time! Your body will thank you."
+        ]
+        return messages.randomElement() ?? messages[0]
+    }
+
+    /// Call this method whenever a drink is logged to refresh notification schedule
+    func refreshNotificationsAfterDrink(wakeTime: Date, sleepTime: Date, frequency: Int, lastDrinkTime: Date) {
+        scheduleReminders(wakeTime: wakeTime, sleepTime: sleepTime, frequency: frequency, lastDrinkTime: lastDrinkTime)
     }
 
     func cancelAllReminders() {
@@ -102,10 +148,19 @@ class NotificationManager: ObservableObject {
             return
         }
 
+        // Check last drink time - don't schedule if recent
+        let lastDrinkTime = checkLastDrinkTime(modelContext: modelContext)
+        if let lastDrink = lastDrinkTime {
+            let hoursSinceLastDrink = Date().timeIntervalSince(lastDrink) / 3600
+            if hoursSinceLastDrink < Self.minimumHoursSinceLastDrink {
+                print("Smart reminders: Last drink was \(String(format: "%.1f", hoursSinceLastDrink)) hours ago, scheduling for later")
+            }
+        }
+
         // Schedule smart suggestions
-        scheduleInactivityReminder(modelContext: modelContext)
-        scheduleProgressCheckReminder(modelContext: modelContext)
-        schedulePatternBasedReminder(modelContext: modelContext)
+        scheduleInactivityReminder(modelContext: modelContext, lastDrinkTime: lastDrinkTime)
+        scheduleProgressCheckReminder(modelContext: modelContext, lastDrinkTime: lastDrinkTime)
+        schedulePatternBasedReminder(modelContext: modelContext, lastDrinkTime: lastDrinkTime)
 
         print("Smart reminders enabled and scheduled")
     }
@@ -124,15 +179,23 @@ class NotificationManager: ObservableObject {
 
     // MARK: - Smart Suggestion Types
 
-    private func scheduleInactivityReminder(modelContext: ModelContext) {
-        // Check every 3 hours if user hasn't logged anything
+    private func scheduleInactivityReminder(modelContext: ModelContext, lastDrinkTime: Date?) {
+        // Schedule reminder for 4 hours after last drink, or 4 hours from now if no drinks
+        let baseTime = lastDrinkTime ?? Date()
+        let reminderTime = baseTime.addingTimeInterval(Self.minimumHoursSinceLastDrink * 60 * 60)
+
+        // If the reminder time is in the past, schedule for 4 hours from now
+        let actualReminderTime = reminderTime > Date() ? reminderTime : Date().addingTimeInterval(Self.minimumHoursSinceLastDrink * 60 * 60)
+
         let content = UNMutableNotificationContent()
         content.title = "Time for Water?"
         content.body = "You haven't logged anything in a while. Stay hydrated!"
         content.sound = .default
 
-        // Schedule for 3 hours from now, doesn't repeat
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3 * 60 * 60, repeats: false)
+        let timeInterval = actualReminderTime.timeIntervalSince(Date())
+        guard timeInterval > 0 else { return }
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: timeInterval, repeats: false)
 
         let request = UNNotificationRequest(
             identifier: "smart-inactivity",
@@ -143,7 +206,7 @@ class NotificationManager: ObservableObject {
         center.add(request)
     }
 
-    private func scheduleProgressCheckReminder(modelContext: ModelContext) {
+    private func scheduleProgressCheckReminder(modelContext: ModelContext, lastDrinkTime: Date?) {
         let dataService = HydrationDataService(modelContext: modelContext)
         let todayIntake = dataService.getTodayIntake()
         let dailyGoal = dataService.getEffectiveGoal()
@@ -152,12 +215,21 @@ class NotificationManager: ObservableObject {
 
         let progressPercentage = (todayIntake * 100) / dailyGoal
 
+        // Calculate cutoff time (4 hours after last drink)
+        let cutoffTime: Date?
+        if let lastDrink = lastDrinkTime {
+            cutoffTime = lastDrink.addingTimeInterval(Self.minimumHoursSinceLastDrink * 60 * 60)
+        } else {
+            cutoffTime = nil
+        }
+
         // Morning check (10 AM)
         scheduleProgressNotification(
             identifier: "smart-progress-morning",
             hour: 10,
             progressPercentage: progressPercentage,
-            timeOfDay: "morning"
+            timeOfDay: "morning",
+            cutoffTime: cutoffTime
         )
 
         // Afternoon check (2 PM)
@@ -165,7 +237,8 @@ class NotificationManager: ObservableObject {
             identifier: "smart-progress-afternoon",
             hour: 14,
             progressPercentage: progressPercentage,
-            timeOfDay: "afternoon"
+            timeOfDay: "afternoon",
+            cutoffTime: cutoffTime
         )
 
         // Evening check (6 PM)
@@ -173,11 +246,29 @@ class NotificationManager: ObservableObject {
             identifier: "smart-progress-evening",
             hour: 18,
             progressPercentage: progressPercentage,
-            timeOfDay: "evening"
+            timeOfDay: "evening",
+            cutoffTime: cutoffTime
         )
     }
 
-    private func scheduleProgressNotification(identifier: String, hour: Int, progressPercentage: Int, timeOfDay: String) {
+    private func scheduleProgressNotification(identifier: String, hour: Int, progressPercentage: Int, timeOfDay: String, cutoffTime: Date?) {
+        let calendar = Calendar.current
+        let now = Date()
+
+        // Get today's version of this time
+        var notificationTime = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: now)!
+
+        // If this time has passed today, schedule for tomorrow
+        if notificationTime < now {
+            notificationTime = calendar.date(byAdding: .day, value: 1, to: notificationTime)!
+        }
+
+        // Skip if within 4 hours of last drink
+        if let cutoff = cutoffTime, notificationTime < cutoff {
+            print("Skipping progress notification at \(hour):00 - within 4 hours of last drink")
+            return
+        }
+
         let content = UNMutableNotificationContent()
         content.title = "Hydration Progress"
 
@@ -208,9 +299,19 @@ class NotificationManager: ObservableObject {
         center.add(request)
     }
 
-    private func schedulePatternBasedReminder(modelContext: ModelContext) {
+    private func schedulePatternBasedReminder(modelContext: ModelContext, lastDrinkTime: Date?) {
         let insightsService = InsightsService(modelContext: modelContext)
         let patterns = insightsService.getHourlyPatterns()
+        let calendar = Calendar.current
+        let now = Date()
+
+        // Calculate cutoff time
+        let cutoffTime: Date?
+        if let lastDrink = lastDrinkTime {
+            cutoffTime = lastDrink.addingTimeInterval(Self.minimumHoursSinceLastDrink * 60 * 60)
+        } else {
+            cutoffTime = nil
+        }
 
         // Find top 3 peak hours
         let topHours = patterns
@@ -218,7 +319,18 @@ class NotificationManager: ObservableObject {
             .sorted { $0.averageIntake > $1.averageIntake }
             .prefix(3)
 
-        for (index, pattern) in topHours.enumerated() {
+        for (_, pattern) in topHours.enumerated() {
+            // Check if this hour's notification would be within 4 hours of last drink
+            var notificationTime = calendar.date(bySettingHour: pattern.hour, minute: 0, second: 0, of: now)!
+            if notificationTime < now {
+                notificationTime = calendar.date(byAdding: .day, value: 1, to: notificationTime)!
+            }
+
+            if let cutoff = cutoffTime, notificationTime < cutoff {
+                print("Skipping pattern notification at \(pattern.hour):00 - within 4 hours of last drink")
+                continue
+            }
+
             let content = UNMutableNotificationContent()
             content.title = "Your Typical Hydration Time"
             content.body = "You typically drink around \(pattern.averageIntake)mL at \(pattern.timeLabel). Quick add?"
@@ -251,19 +363,12 @@ class NotificationManager: ObservableObject {
 
     // MARK: - Helper Methods
 
-    func checkLastDrinkTime(modelContext: ModelContext) -> Date? {
+    private func checkLastDrinkTime(modelContext: ModelContext) -> Date? {
         let descriptor = FetchDescriptor<DrinkEntry>(
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
 
         let drinks = try? modelContext.fetch(descriptor)
         return drinks?.first?.timestamp
-    }
-
-    func getTimeSinceLastDrink(modelContext: ModelContext) -> TimeInterval? {
-        guard let lastDrink = checkLastDrinkTime(modelContext: modelContext) else {
-            return nil
-        }
-        return Date().timeIntervalSince(lastDrink)
     }
 }

@@ -33,7 +33,7 @@ class UserProfile {
         let base = baseRate * weightKg
         let activityBonus = Double(activityLevel.bonus)
         let total = Int(base + activityBonus)
-        return min(max(total, 1500), 4500)
+        return min(max(total, 1500), 3200)
     }
 
     var dailyGoalMl: Int {

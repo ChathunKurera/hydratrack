@@ -47,7 +47,7 @@ struct GoalBreakdownView: View {
                 }
 
                 if breakdown.wasClamped {
-                    Text("Adjusted to recommended range (1500-4500 mL)")
+                    Text("Adjusted to recommended range (1500-3200 mL)")
                         .font(.caption)
                         .foregroundColor(.orange)
                 }

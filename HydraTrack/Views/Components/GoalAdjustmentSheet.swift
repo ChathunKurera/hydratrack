@@ -107,7 +107,7 @@ struct GoalAdjustmentSheet: View {
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
 
                             Button("Set") {
-                                if let goal = Int(customGoal), goal >= 1500, goal <= 4500 {
+                                if let goal = Int(customGoal), goal >= 1500, goal <= 3200 {
                                     onAccept(goal)
                                     dismiss()
                                 }
